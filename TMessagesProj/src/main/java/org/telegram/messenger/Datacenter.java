@@ -11,34 +11,31 @@ package org.telegram.messenger;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-import org.telegram.TL.TLRPC;
-import org.telegram.ui.ApplicationLoader;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 
 public class Datacenter {
-    private final int DATA_VERSION = 3;
+    private static final int DATA_VERSION = 4;
 
     public int datacenterId;
     public ArrayList<String> addresses = new ArrayList<String>();
     public HashMap<String, Integer> ports = new HashMap<String, Integer>();
-    public int[] defaultPorts = new int[] {-1, 80, -1, 443, -1, 443, -1, 80, -1, 443, -1};
+    public int[] defaultPorts =   new int[] {-1, 80, -1, 443, -1, 443, -1, 80, -1, 443, -1};
+    public int[] defaultPorts8888 = new int[] {-1, 8888, -1, 443, -1, 8888,  -1, 80, -1, 8888,  -1};
     public boolean authorized;
-    public long authSessionId;
-    public long authDownloadSessionId;
-    public long authUploadSessionId;
     public byte[] authKey;
-    public byte[] authKeyId;
+    public long authKeyId;
     public int lastInitVersion = 0;
+    public int overridePort = -1;
     private volatile int currentPortNum = 0;
     private volatile int currentAddressNum = 0;
 
     public TcpConnection connection;
-    public TcpConnection downloadConnection;
-    public TcpConnection uploadConnection;
+    private TcpConnection downloadConnection;
+    private TcpConnection uploadConnection;
+    public TcpConnection pushConnection;
 
     private ArrayList<ServerSalt> authServerSaltSet = new ArrayList<ServerSalt>();
 
@@ -59,7 +56,7 @@ public class Datacenter {
             }
             len = data.readInt32();
             if (len != 0) {
-                authKeyId = data.readData(len);
+                authKeyId = data.readInt64();
             }
             authorized = data.readInt32() != 0;
             len = data.readInt32();
@@ -75,9 +72,9 @@ public class Datacenter {
             }
         } else if (version == 1) {
             int currentVersion = data.readInt32();
-            if (currentVersion == 2 || currentVersion == 3) {
+            if (currentVersion == 2 || currentVersion == 3 || currentVersion == 4) {
                 datacenterId = data.readInt32();
-                if (currentVersion == 3) {
+                if (currentVersion >= 3) {
                     lastInitVersion = data.readInt32();
                 }
                 int len = data.readInt32();
@@ -91,9 +88,13 @@ public class Datacenter {
                 if (len != 0) {
                     authKey = data.readData(len);
                 }
-                len = data.readInt32();
-                if (len != 0) {
-                    authKeyId = data.readData(len);
+                if (currentVersion == 4) {
+                    authKeyId = data.readInt64();
+                } else {
+                    len = data.readInt32();
+                    if (len != 0) {
+                        authKeyId = data.readInt64();
+                    }
                 }
                 authorized = data.readInt32() != 0;
                 len = data.readInt32();
@@ -108,6 +109,8 @@ public class Datacenter {
                     authServerSaltSet.add(salt);
                 }
             }
+        } else if (version == 2) {
+
         }
         readCurrentAddressAndPortNum();
     }
@@ -124,14 +127,23 @@ public class Datacenter {
 
     public int getCurrentPort() {
         if (ports.isEmpty()) {
-            return 443;
+            return overridePort == -1 ? 443 : overridePort;
+        }
+
+        int[] portsArray = defaultPorts;
+
+        if (overridePort == 8888) {
+            portsArray = defaultPorts8888;
         }
 
         if (currentPortNum >= defaultPorts.length) {
             currentPortNum = 0;
         }
-        int port = defaultPorts[currentPortNum];
+        int port = portsArray[currentPortNum];
         if (port == -1) {
+            if (overridePort != -1) {
+                return overridePort;
+            }
             String address = getCurrentAddress();
             return ports.get(address);
         }
@@ -198,12 +210,7 @@ public class Datacenter {
         } else {
             stream.writeInt32(0);
         }
-        if (authKeyId != null) {
-            stream.writeInt32(authKeyId.length);
-            stream.writeRaw(authKeyId);
-        } else {
-            stream.writeInt32(0);
-        }
+        stream.writeInt64(authKeyId);
         stream.writeInt32(authorized ? 1 : 0);
         stream.writeInt32(authServerSaltSet.size());
         for (ServerSalt salt : authServerSaltSet) {
@@ -215,7 +222,7 @@ public class Datacenter {
 
     public void clear() {
         authKey = null;
-        authKeyId = null;
+        authKeyId = 0;
         authorized = false;
         authServerSaltSet.clear();
     }
@@ -309,5 +316,77 @@ public class Datacenter {
             }
         }
         return false;
+    }
+
+    public void suspendConnections() {
+        if (connection != null) {
+            connection.suspendConnection(true);
+        }
+        if (uploadConnection != null) {
+            uploadConnection.suspendConnection(true);
+        }
+        if (downloadConnection != null) {
+            downloadConnection.suspendConnection(true);
+        }
+    }
+
+    public void getSessions(ArrayList<Long> sessions) {
+        if (connection != null) {
+            sessions.add(connection.getSissionId());
+        }
+        if (uploadConnection != null) {
+            sessions.add(uploadConnection.getSissionId());
+        }
+        if (downloadConnection != null) {
+            sessions.add(downloadConnection.getSissionId());
+        }
+    }
+
+    public void recreateSessions() {
+        if (connection != null) {
+            connection.recreateSession();
+        }
+        if (uploadConnection != null) {
+            uploadConnection.recreateSession();
+        }
+        if (downloadConnection != null) {
+            downloadConnection.recreateSession();
+        }
+    }
+
+    public TcpConnection getDownloadConnection(TcpConnection.TcpConnectionDelegate delegate) {
+        if (authKey != null) {
+            if (downloadConnection == null) {
+                downloadConnection = new TcpConnection(datacenterId);
+                downloadConnection.delegate = delegate;
+                downloadConnection.transportRequestClass = RPCRequest.RPCRequestClassDownloadMedia;
+            }
+            downloadConnection.connect();
+        }
+        return downloadConnection;
+    }
+
+    public TcpConnection getUploadConnection(TcpConnection.TcpConnectionDelegate delegate) {
+        if (authKey != null) {
+            if (uploadConnection == null) {
+                uploadConnection = new TcpConnection(datacenterId);
+                uploadConnection.delegate = delegate;
+                uploadConnection.transportRequestClass = RPCRequest.RPCRequestClassUploadMedia;
+            }
+            uploadConnection.connect();
+        }
+        return uploadConnection;
+    }
+
+    public TcpConnection getGenericConnection(TcpConnection.TcpConnectionDelegate delegate) {
+        if (authKey != null) {
+            if (connection == null) {
+                connection = new TcpConnection(datacenterId);
+                connection.delegate = delegate;
+                connection.transportRequestClass = RPCRequest.RPCRequestClassGeneric;
+            }
+            connection.connect();
+        }
+        return connection;
     }
 }

@@ -56,33 +56,8 @@ public class PyroSelector {
 
     //
 
-    public ByteBuffer malloc(int size) {
-        return ByteBuffer.allocate(size);
-    }
-
-    public ByteBuffer malloc(byte[] array) {
-        ByteBuffer copy = this.malloc(array.length);
-        copy.put(array);
-        copy.flip();
-        return copy;
-    }
-
-    public ByteBuffer copy(ByteBuffer buffer) {
-        ByteBuffer copy = this.malloc(buffer.remaining());
-        copy.put(buffer);
-        buffer.position(buffer.position() - copy.remaining());
-        copy.flip();
-        return copy;
-    }
-
-    //
-
     public final boolean isNetworkThread() {
-        if (DO_NOT_CHECK_NETWORK_THREAD) {
-            return true;
-        }
-
-        return networkThread == Thread.currentThread();
+        return DO_NOT_CHECK_NETWORK_THREAD || networkThread == Thread.currentThread();
     }
 
     public final Thread networkThread() {
@@ -95,8 +70,7 @@ public class PyroSelector {
         }
 
         if (!this.isNetworkThread()) {
-            throw new PyroException(
-                    "call from outside the network-thread, you must schedule tasks");
+            throw new PyroException("call from outside the network-thread, you must schedule tasks");
         }
     }
 
@@ -104,17 +78,12 @@ public class PyroSelector {
         return this.connect(host, null);
     }
 
-    public PyroClient connect(InetSocketAddress host, InetSocketAddress bind)
-            throws IOException {
-        try {
-            return new PyroClient(this, bind, host);
-        } catch (IOException exc) {
-            throw exc;
-        }
+    public PyroClient connect(InetSocketAddress host, InetSocketAddress bind) throws IOException {
+        return new PyroClient(this, bind, host);
     }
 
     public void select() {
-        this.select(10);
+        this.select(0);
     }
 
     public void select(long eventTimeout) {
@@ -144,17 +113,16 @@ public class PyroSelector {
         }
     }
 
-    private final void performNioSelect(long timeout) {
+    private void performNioSelect(long timeout) {
         int selected;
         try {
             selected = nioSelector.select(timeout);
         } catch (IOException exc) {
             exc.printStackTrace();
-            return;
         }
     }
 
-    private final void handleSelectedKeys(long now) {
+    private void handleSelectedKeys(long now) {
         Iterator<SelectionKey> keys = nioSelector.selectedKeys().iterator();
 
         while (keys.hasNext()) {
@@ -168,7 +136,7 @@ public class PyroSelector {
         }
     }
 
-    private final void handleSocketTimeouts(long now) {
+    private void handleSocketTimeouts(long now) {
         for (SelectionKey key: nioSelector.keys()) {
             if (key.channel() instanceof SocketChannel) {
                 PyroClient client = (PyroClient) key.attachment();
